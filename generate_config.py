@@ -118,51 +118,60 @@ print """
                                            Setup Utility
     """
 
-print "What is the base domain name you will be using? "
-print "(ex. localhost, www.example.com)"
-hostname = raw_input( "Domain? ")
-if hostname != "":
-	settings["domain"] = hostname
-nginx_template = nginx_template.replace( "fakedomain.com", settings["domain"] )
+if os.path.isfile('config.yaml'):
+	print("\nFound existing config, using it for template generation\n")
+	with open("config.yaml", 'r') as stream:
+	    try:
+		settings=yaml.safe_load(stream)
+	    except yaml.YAMLError as exc:
+		print(exc)
+	hostname=settings["domain"] 
+	nginx_template = nginx_template.replace( "fakedomain.com", settings["domain"] )
+else:
+	print "What is the base domain name you will be using? "
+	print "(ex. localhost, www.example.com)"
+	hostname = raw_input( "Domain? ")
+	if hostname != "":
+		settings["domain"] = hostname
+	nginx_template = nginx_template.replace( "fakedomain.com", settings["domain"] )
+	print "Great! Now let's setup your Mailgun account to send XSS alerts to."
+	print ""
+	print "Enter your API key: "
+	print "(ex. key-8da843ff65205a61374b09b81ed0fa35)"
+	settings["mailgun_api_key"] = raw_input( "Mailgun API key: ")
+	print ""
+	print "What is your Mailgun domain? "
+	print "(ex. example.com)"
+	settings["mailgun_sending_domain"] = raw_input( "Mailgun domain: ")
+	print ""
+	print "What email address is sending the payload fire emails?: "
+	print "(ex. no-reply@example.com)"
+	settings["email_from"] = raw_input( "Sending email address: ")
+	print ""
+	print "Where should abuse/contact emails go?: "
+	print "(ex. yourpersonal@gmail.com)"
+	settings["abuse_email"] = raw_input( "Abuse/Contact email: ")
+	print ""
+	print ""
+	print "What postgres user is this service using? "
+	print "(ex. xsshunter)"
+	settings["postgreql_username"] = raw_input( "Postgres username: ")
+	print ""
+	print "What is the postgres user's password? "
+	print "(ex. @!$%@^%UOFGJOEJG$)"
+	settings["postgreql_password"] = raw_input( "Postgres password: ")
+	print ""
+	print "What is the postgres user's DB? "
+	print "(ex. xsshunter)"
+	settings["postgres_db"] = raw_input( "Postgres DB: ")
+	print ""
+	print "Generating cookie secret..."
+	settings["cookie_secret"] = binascii.hexlify( os.urandom(50) )
 
-print "Great! Now let's setup your Mailgun account to send XSS alerts to."
-print ""
-print "Enter your API key: "
-print "(ex. key-8da843ff65205a61374b09b81ed0fa35)"
-settings["mailgun_api_key"] = raw_input( "Mailgun API key: ")
-print ""
-print "What is your Mailgun domain? "
-print "(ex. example.com)"
-settings["mailgun_sending_domain"] = raw_input( "Mailgun domain: ")
-print ""
-print "What email address is sending the payload fire emails?: "
-print "(ex. no-reply@example.com)"
-settings["email_from"] = raw_input( "Sending email address: ")
-print ""
-print "Where should abuse/contact emails go?: "
-print "(ex. yourpersonal@gmail.com)"
-settings["abuse_email"] = raw_input( "Abuse/Contact email: ")
-print ""
-print ""
-print "What postgres user is this service using? "
-print "(ex. xsshunter)"
-settings["postgreql_username"] = raw_input( "Postgres username: ")
-print ""
-print "What is the postgres user's password? "
-print "(ex. @!$%@^%UOFGJOEJG$)"
-settings["postgreql_password"] = raw_input( "Postgres password: ")
-print ""
-print "What is the postgres user's DB? "
-print "(ex. xsshunter)"
-settings["postgres_db"] = raw_input( "Postgres DB: ")
-print ""
-print "Generating cookie secret..."
-settings["cookie_secret"] = binascii.hexlify( os.urandom(50) )
-
-yaml_config = yaml.dump( settings, default_flow_style=False)
-file_handler = open( "config.yaml", "w" )
-file_handler.write( yaml_config )
-file_handler.close()
+	yaml_config = yaml.dump( settings, default_flow_style=False)
+	file_handler = open( "config.yaml", "w" )
+	file_handler.write( yaml_config )
+	file_handler.close()
 
 print "Minting new nginx configuration file..."
 file_handler = open( "default", "w" )
