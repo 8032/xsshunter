@@ -355,7 +355,7 @@ class RegisterHandler(BaseHandler):
             self.write( json.dumps( return_dict ) )
             return
 
-	domain = user_data.get( "domain" )
+        domain = user_data.get( "domain" )
         if session.query( User ).filter_by( domain=domain ).first() or domain in FORBIDDEN_SUBDOMAINS:
             return_dict = {
                 "success": False,
@@ -439,9 +439,9 @@ class CallbackHandler(BaseHandler):
             callback_data = json.loads( self.request.body )
             callback_data['ip'] = self.request.remote_ip
 
-	    # Check if injection already recently recorded
-	    owner_user = self.get_user_from_subdomain()
-    	    if 0 < session.query( InjectionRequest ).filter( Injection.owner_id == owner_user.id, Injection.vulnerable_page == callback_data["uri"].encode("utf-8"), Injection.victim_ip == self.request.remote_ip, Injection.user_agent == callback_data["user-agent"].encode("utf-8"), Injection.injection_timestamp > time.time()-900).count():
+        # Check if injection already recently recorded
+        owner_user = self.get_user_from_subdomain()
+        if 0 < session.query( InjectionRequest ).filter( Injection.owner_id == owner_user.id, Injection.vulnerable_page == callback_data["uri"].encode("utf-8"), Injection.victim_ip == self.request.remote_ip, Injection.user_agent == callback_data["user-agent"].encode("utf-8"), Injection.injection_timestamp > time.time()-900).count():
                 self.write( '{"DUPLICATE"}' )
             else:
                 injection_db_record = record_callback_in_database( callback_data, self )
@@ -479,19 +479,18 @@ class HomepageHandler(BaseHandler):
         else:
             new_probe = new_probe.replace( '[TEMPLATE_REPLACE_ME]', json.dumps( "" ))
 
-	# Check recent callbacks
-	if "Referer" in self.request.headers:
+        # Check recent callbacks
+        if "Referer" in self.request.headers:
             if 0 < session.query( Injection ).filter( Injection.victim_ip == self.request.remote_ip, Injection.injection_timestamp > time.time()-900, Injection.vulnerable_page == self.request.headers.get("Referer")).count():
-                new_probe = 'Injection already recorded within last fifteen minutes'
-	else:
-	    if 0 < session.query( Injection ).filter( Injection.victim_ip == self.request.remote_ip, Injection.injection_timestamp > time.time()-900).count():
-                new_probe = 'Injection already recorded within last fifteen minutes'
-
-        if self.request.uri != "/":
-            probe_id = self.request.uri.split('/')[1].split('?')[0]
-            self.write( new_probe.replace( "[PROBE_ID]", probe_id ) )
+                    new_probe = 'Injection already recorded within last fifteen minutes'
         else:
-            self.write( new_probe )
+            if 0 < session.query( Injection ).filter( Injection.victim_ip == self.request.remote_ip, Injection.injection_timestamp > time.time()-900).count():
+                    new_probe = 'Injection already recorded within last fifteen minutes'
+            if self.request.uri != "/":
+                probe_id = self.request.uri.split('/')[1].split('?')[0]
+                self.write( new_probe.replace( "[PROBE_ID]", probe_id ) )
+            else:
+                self.write( new_probe )
 
 class ContactUsHandler(BaseHandler):
     def post( self ):
